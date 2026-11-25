@@ -3,12 +3,13 @@ Lab 12 - Data Pipeline Automation
 =================================
 The Practice 10 script, split into tasks and run by Airflow on a schedule.
 
-    check_source_files >> extract_load >> dbt_run >> dbt_test >> report
+    check_source_files >> extract_load >> dbt_run >> dbt_test >> report >> export_monthly_revenue
 
   E + L : scripts/extract_load.py   (CSV  -> DuckDB raw.*)
   T     : dbt run                   (raw  -> staging.* -> dw.* star schema)
   QC    : dbt test                  (replaces the hand-written qc = {...} checks)
   Report: print the monthly revenue table into the task log
+  Export: write dw.mart_monthly_revenue to data/export/monthly_revenue.csv
 """
 from __future__ import annotations
 
@@ -96,8 +97,32 @@ def retail_pipeline():
         finally:
             con.close()
 
+    @task
+    def export_monthly_revenue() -> str:
+        import duckdb
+
+        export_dir = LAB_HOME / "data" / "export"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        out_path = export_dir / "monthly_revenue.csv"
+
+        con = duckdb.connect(str(DB_PATH), read_only=True)
+        try:
+            con.execute(f"""
+                COPY (
+                    SELECT ym, category, product_name, units_sold, revenue
+                    FROM dw.mart_monthly_revenue
+                    ORDER BY ym, revenue DESC
+                ) TO '{out_path}' (HEADER, DELIMITER ',')
+            """)
+            row_count = con.execute("SELECT count(*) FROM dw.mart_monthly_revenue").fetchone()[0]
+        finally:
+            con.close()
+
+        print(f"Exported {row_count} rows to {out_path}")
+        return str(out_path)
+
     loaded = extract_load(check_source_files())
-    loaded >> dbt_run >> dbt_test >> report()
+    loaded >> dbt_run >> dbt_test >> report() >> export_monthly_revenue()
 
 
 retail_pipeline()
